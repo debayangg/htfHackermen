@@ -88,7 +88,7 @@ async def process_eth_address(data: EthereumRequest):
             return {'score': 0}
 
         # Run graph score, KYC verification, process, and age transaction score in parallel
-        tasks = [
+        '''tasks = [
             asyncio.to_thread(txnGraphScore, eth_address),  # Wrap synchronous function if it's not async
             KYCverified(eth_address),    # Make sure KYCverified is async
             process(eth_address),        # Make sure process is async
@@ -96,7 +96,13 @@ async def process_eth_address(data: EthereumRequest):
         ]
 
         # Await all tasks in parallel
-        graph_score, kyc_score, val_store, age_txn_score = await asyncio.gather(*tasks)
+        graph_score, kyc_score, val_store, age_txn_score = await asyncio.gather(*tasks)'''
+
+        graph_score = txnGraphScore(eth_address)
+        kyc_score = await KYCverified(eth_address)
+        val_store = await process(eth_address)
+        ml_score = val_store['prediction'][0]
+        age_txn_score = ageTxnScore(eth_address)
         
         # Process the results
         graph_score *= 100
