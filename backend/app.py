@@ -15,7 +15,7 @@ app = FastAPI()
 class EthereumRequest(BaseModel):
     address: str
 
-mongo_uri = os.getenv('MONGO')
+mongo_uri = os.getenv('MONGO_URI')
 
 client = pymongo.MongoClient(mongo_uri)
 db = client["blacklistDB"]
