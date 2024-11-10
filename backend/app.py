@@ -1,13 +1,12 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-import motor.motor_asyncio
+import pymongo
 import httpx
 from dotenv import load_dotenv
 import os
 from model.anamoly import process
 from ScoreCalculation.TxnGraphScore import txnGraphScore
 from ScoreCalculation.accountAge import ageTxnScore
-import asyncio
 
 load_dotenv()
 
@@ -18,7 +17,7 @@ class EthereumRequest(BaseModel):
 
 mongo_uri = os.getenv('MONGO')
 
-client = motor.motor_asyncio.AsyncIOMotorClient(mongo_uri)
+client = pymongo.MongoClient(mongo_uri)
 db = client["blacklistDB"]
 blacklist_collection = db["blacklists"]
 kyc_collection = db["kycs"]
