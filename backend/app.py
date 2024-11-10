@@ -75,7 +75,6 @@ async def KYCverified(eth_address: str) -> int:
         raise HTTPException(status_code=500, detail=f"Error checking KYC: {str(e)}")
 
 @app.post("/process_eth_address")
-
 async def process_eth_address(data: EthereumRequest):
     try:
         eth_address = data.address
@@ -125,3 +124,9 @@ async def process_eth_address(data: EthereumRequest):
         raise e
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Unexpected error in processing: {str(e)}")
+
+@app.get("/")
+def base_request():
+    return {
+        "value":1
+    }
