@@ -3,7 +3,7 @@ from dotenv import load_dotenv
 import pandas as pd
 import time
 import requests
-import fetchBlacklist
+from ScoreCalculation import fetchBlacklist
 
 
 class RateLimiter:
@@ -34,7 +34,7 @@ class RateLimiter:
 
 def get_api_key():
    load_dotenv()
-   API_KEY = os.getenv('API_KEY')
+   API_KEY = os.getenv('ETHERSCAN_API_KEY')
    return API_KEY
 
 def get_eth_wallet_transactions(input_eth_wallet,txn_accs,end):
