@@ -2,6 +2,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from dotenv import load_dotenv
 from ScoreCalculation import TxnGraphScore, accountAge
+from model.anamoly import process
 import os
 import requests
 from pymongo import MongoClient
@@ -116,7 +117,7 @@ def store_score(address: str, score: float):
     conn.close()
 
 # Function to simulate asynchronous score calculation
-def calculate_score(eth_address: str):
+async def calculate_score(eth_address: str):
     # Simulate score calculation logic
     score = 0
     graph_score = 0
@@ -132,6 +133,7 @@ def calculate_score(eth_address: str):
     kyc_score += KYCverified(eth_address)
     graph_score += TxnGraphScore.txnGraphScore(eth_address)
     age_txn_score += accountAge.age_txn_score(eth_address)
+    val_store = await process(eth_address)    
 
     # Normalize scores
     graph_score *= 100
@@ -139,9 +141,13 @@ def calculate_score(eth_address: str):
     kyc_score *= 100
     age_txn_score = 1 - age_txn_score
     age_txn_score *= 100
+    ml_score = val_store['prediction'][0]
+    ml_score = 1 - ml_score
+    print(ml_score)
+    ml_score *= 100
 
     # Calculate final score
-    final_score = (graph_score + kyc_score + age_txn_score) / 3
+    final_score = (graph_score + kyc_score + age_txn_score + ml_score) / 4
 
     # Store the score in the database
     store_score(eth_address, final_score)
@@ -155,10 +161,8 @@ async def process_eth_address(data: EthereumRequest):
         stored_score = get_address_status(eth_address)
         if stored_score:
             return {'score': stored_score[0], 'calculated': True}  # Return the stored score and calculated: True
-
-        # If the score is not found in the database, return immediately with calculated: false
-        # Start the score calculation in the background (asynchronously or in a separate thread)
-        threading.Thread(target=calculate_score, args=(eth_address,)).start()
+        else :
+            asyncio.create_task(calculate_score(eth_address))
 
         return {'score': None, 'calculated': False}  # Return None as score and calculated: False
 
