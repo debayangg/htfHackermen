@@ -5,6 +5,10 @@ from ScoreCalculation import TxnGraphScore, accountAge
 import os
 import requests
 from pymongo import MongoClient
+import sqlite3
+from typing import Dict
+import asyncio
+import threading
 
 # Load environment variables
 load_dotenv()
@@ -83,39 +87,81 @@ def KYCverified(eth_address: str) -> int:
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error checking KYC: {str(e)}")
 
-# Asynchronous route to process Ethereum address
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
+import sqlite3
+import threading
+
+app = FastAPI()
+
+# Define the request model
+class EthereumRequest(BaseModel):
+    address: str
+
+# Function to check if the address exists in the SQLite DB
+def get_address_status(address: str):
+    conn = sqlite3.connect('addresses.db')
+    cursor = conn.cursor()
+    cursor.execute('SELECT score FROM address_scores WHERE address = ?', (address,))
+    row = cursor.fetchone()
+    conn.close()
+    return row  # Return the row (score) if it exists, None otherwise
+
+# Function to store the score in the SQLite DB
+def store_score(address: str, score: float):
+    conn = sqlite3.connect('addresses.db')
+    cursor = conn.cursor()
+    cursor.execute('INSERT OR REPLACE INTO address_scores (address, score) VALUES (?, ?)', (address, score))
+    conn.commit()
+    conn.close()
+
+# Function to simulate asynchronous score calculation
+def calculate_score(eth_address: str):
+    # Simulate score calculation logic
+    score = 0
+    graph_score = 0
+    kyc_score = 0
+    age_txn_score = 0 
+
+    # Call external functions for KYC, TxnGraph, Account Age (for example)
+    if Scammer(eth_address) == 1:
+        score = 1  # Direct return for scammer
+        store_score(eth_address, score)
+        return
+
+    kyc_score += KYCverified(eth_address)
+    graph_score += TxnGraphScore.txnGraphScore(eth_address)
+    age_txn_score += accountAge.age_txn_score(eth_address)
+
+    # Normalize scores
+    graph_score *= 100
+    kyc_score = 1 - kyc_score
+    kyc_score *= 100
+    age_txn_score = 1 - age_txn_score
+    age_txn_score *= 100
+
+    # Calculate final score
+    final_score = (graph_score + kyc_score + age_txn_score) / 3
+
+    # Store the score in the database
+    store_score(eth_address, final_score)
+
 @app.post("/process_eth_address")
 async def process_eth_address(data: EthereumRequest):
     try:
         eth_address = data.address
-        score = 0
-        graph_score = 0
-        kyc_score = 0
-        age_txn_score = 0 
 
-        # Scammer and KYC functions are synchronous, so they can be called directly
-        if Scammer(eth_address) == 1:
-            return {'score':1}
-        
-        kyc_score += KYCverified(eth_address)
-        print('Passed KYC check')
-        graph_score += TxnGraphScore.txnGraphScore(eth_address)
-        print('Passed Txn Graph check')
-        age_txn_score += accountAge.age_txn_score(eth_address)
-        print('Passed account age check')
+        # Check if the score is already calculated and stored
+        stored_score = get_address_status(eth_address)
+        if stored_score:
+            return {'score': stored_score[0], 'calculated': True}  # Return the stored score and calculated: True
 
-        graph_score *= 100
-        kyc_score = 1 - kyc_score
-        kyc_score *= 100
-        
-        
-        age_txn_score = 1 - age_txn_score
-        age_txn_score *= 100
+        # If the score is not found in the database, return immediately with calculated: false
+        # Start the score calculation in the background (asynchronously or in a separate thread)
+        threading.Thread(target=calculate_score, args=(eth_address,)).start()
 
-        # Calculate the final score
-        final_score = (graph_score + kyc_score + age_txn_score) / 3
-        
-        return {'score': 100 - final_score}
+        return {'score': None, 'calculated': False}  # Return None as score and calculated: False
+
     except HTTPException as e:
         raise e
     except Exception as e:
