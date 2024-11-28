@@ -5,7 +5,7 @@ charset-normalizer
 click
 dnspython
 exceptiongroup
-fastapi
+fastapi[standard]
 h11
 idna
 importlib-metadata
