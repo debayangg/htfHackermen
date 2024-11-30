@@ -102,17 +102,6 @@ def KYCverified(eth_address: str) -> int:
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error checking KYC: {str(e)}")
 
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
-import sqlite3
-import threading
-
-app = FastAPI()
-
-# Define the request model
-class EthereumRequest(BaseModel):
-    address: str
-
 # Function to check if the address exists in the SQLite DB
 def get_address_status(address: str):
     conn = sqlite3.connect('addresses.db')
