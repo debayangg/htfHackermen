@@ -4,7 +4,7 @@ import pickle
 import os
 import numpy as np
 from dotenv import load_dotenv
-import httpx
+import requests
 import pandas as pd
 
 load_dotenv()
@@ -26,29 +26,27 @@ class EthereumRequest(BaseModel):
 
 
 # Helper functions to get data from API
-async def get_wallet_balance(address: str) -> float:
+def get_wallet_balance(address: str) -> float:
     url = f'https://api.etherscan.io/api?module=account&action=balance&address={address}&tag=latest&apikey={os.getenv("ETHERSCAN_API_KEY")}'
-    async with httpx.AsyncClient() as client:
-        response = await client.get(url)
-        if response.status_code == 200:
-            balance_in_wei = response.json().get("result")
-            return float(balance_in_wei) / 1e18
-        else:
-            raise HTTPException(status_code=response.status_code, detail="Error fetching wallet balance")
+    response = requests.get(url)
+    if response.status_code == 200:
+        balance_in_wei = response.json().get("result")
+        return float(balance_in_wei) / 1e18
+    else:
+        raise HTTPException(status_code=response.status_code, detail="Error fetching wallet balance")
 
 
-async def get_transactions(address: str) -> list:
+def get_transactions(address: str) -> list:
     url = f'https://api.etherscan.io/api?module=account&action=txlist&address={address}&startblock=0&endblock=99999999&sort=asc&apikey={os.getenv("ETHERSCAN_API_KEY")}'
-    async with httpx.AsyncClient() as client:
-        response = await client.get(url)
-        if response.status_code == 200:
-            return response.json().get("result", [])
-        else:
-            raise HTTPException(status_code=response.status_code, detail="Error fetching transactions")
+    response = requests.get(url)
+    if response.status_code == 200:
+        return response.json().get("result", [])
+    else:
+        raise HTTPException(status_code=response.status_code, detail="Error fetching transactions")
 
 
 # Fetch and engineer features
-async def fetch_transaction_stats(address: str) -> dict:
+def fetch_transaction_stats(address: str) -> dict:
     stats = {
         "timeDiffFirstLastMins": 0,
         "avgValReceived": 0,
@@ -63,8 +61,8 @@ async def fetch_transaction_stats(address: str) -> dict:
     }
 
     # Populate stats with fetched transaction data
-    stats["totalEtherBalance"] = await get_wallet_balance(address)
-    transactions = await get_transactions(address)
+    stats["totalEtherBalance"] = get_wallet_balance(address)
+    transactions = get_transactions(address)
     received_txns = [tx for tx in transactions if tx["to"].lower() == address.lower()]
     sent_txns = [tx for tx in transactions if tx["from"].lower() == address.lower()]
 
@@ -105,8 +103,8 @@ async def fetch_transaction_stats(address: str) -> dict:
     return stats
 
 
-async def predict(eth_request: EthereumRequest):
-    features = await fetch_transaction_stats(eth_request.address)
+def process(eth_request : str):
+    features = fetch_transaction_stats(eth_request)
 
     # Arrange features in expected order for the model
     feature_order = [
@@ -120,15 +118,6 @@ async def predict(eth_request: EthereumRequest):
     # Perform prediction
     try:
         prediction = model.predict(feature_values)
-        return {"prediction": prediction[0]}
+        return prediction
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Unexpected error in prediction: {str(e)}")
-
-
-async def process(eth_address):
-    features = await fetch_transaction_stats(eth_address)
-    feature_values = list(features.values())
-    feature_df = pd.DataFrame([feature_values], columns=features.keys())
-    transformed_features = feature_df.values
-    prediction = model.predict(transformed_features)
-    return {"prediction": prediction.tolist()}

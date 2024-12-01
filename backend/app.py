@@ -13,7 +13,6 @@ import queue
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager,asynccontextmanager
 import threading
-import asyncio
 
 # Load environment variables
 load_dotenv()
@@ -134,7 +133,7 @@ def store_score(address: str, score: float):
         cursor.execute('INSERT INTO address_scores (address, score) VALUES (?, ?)', (address, score))
         conn.commit()
 
-async def calculate_score(eth_address: str):
+def calculate_score(eth_address: str):
     """Calculate and store the score for an Ethereum address."""
     if Scammer(eth_address) == 1:
         store_score(eth_address, 1)
@@ -146,14 +145,13 @@ async def calculate_score(eth_address: str):
     print(f'Graph score calculated for {eth_address}')
     age_txn_score = accountAge.age_txn_score(eth_address)
     print(f'Age txn score calculated for {eth_address}')
-    val_store = await process(eth_address)
+    ml_score = process(eth_address)[0]
     print(f'ML score calculated for {eth_address}')
 
     # Normalize and calculate final score
     graph_score *= 100
     kyc_score = (1 - kyc_score) * 100
     age_txn_score = (1 - age_txn_score) * 100
-    ml_score = val_store['prediction'][0]
     ml_score = 1 - ml_score
     ml_score *= 100
     final_score = (graph_score + kyc_score + age_txn_score + ml_score) / 4
@@ -163,16 +161,41 @@ async def calculate_score(eth_address: str):
 worker_count = 0  # Initialize worker count
 worker_count_lock = threading.Lock()  # Lock to ensure thread-safe updates to worker_count
 
-async def process_address(eth_address: str):
+def worker_manager():
     """
-    Worker function to process an Ethereum address asynchronously.
+    Worker Manager to dynamically create threads to process tasks.
+    Spawns new threads when there are tasks in the queue and available worker slots.
+    """
+    global worker_count
+    while True:
+        # Check if there are tasks in the queue and available workers
+        if not eth_address_queue.empty():
+            with worker_count_lock:
+                if worker_count < MAX_WORKERS:
+                    # Fetch the next task from the queue
+                    eth_address = eth_address_queue.get()
+                    # Create a new thread to process the address
+                    thread = threading.Thread(target=process_address, args=(eth_address,), daemon=True)
+                    thread.start()
+
+                    # Increment the worker count
+                    worker_count += 1
+                    print(f"Worker started for address {eth_address}. Total workers: {worker_count}")
+
+        # Small sleep to prevent excessive CPU usage
+        threading.Event().wait(0.1)
+
+def process_address(eth_address: str):
+    """
+    Worker function to process an Ethereum address.
+    Decrements the worker count after task completion.
     """
     global worker_count
 
     print('Processing address...')
     try:
         # Calculate the score for the address
-        await calculate_score(eth_address)
+        calculate_score(eth_address)
         print(f"Address {eth_address} processed.")
     except Exception as e:
         print(f"Error processing address {eth_address}: {e}")
@@ -183,32 +206,12 @@ async def process_address(eth_address: str):
             worker_count -= 1
             print(f"Worker finished for address {eth_address}. Total workers: {worker_count}")
 
-async def worker_manager():
-    """
-    Worker Manager to dynamically create tasks for processing.
-    Spawns new async tasks when there are items in the queue.
-    """
-    global worker_count
-
-    while True:
-        if not eth_address_queue.empty():
-            with worker_count_lock:
-                if worker_count < MAX_WORKERS:
-                    eth_address = eth_address_queue.get()
-
-                    # Add a new async task to process the address
-                    asyncio.create_task(process_address(eth_address))
-                    worker_count += 1
-                    print(f"Worker started for address {eth_address}. Total workers: {worker_count}")
-
-        await asyncio.sleep(0.1)  # Prevent excessive CPU usage
-
 @app.on_event("startup")
 async def startup_event():
     """
     Start the Worker Manager on application startup.
     """
-    asyncio.create_task(worker_manager())
+    threading.Thread(target=worker_manager, daemon=True).start()
     print("Worker Manager started.")
 
 @app.post("/process_eth_address")
