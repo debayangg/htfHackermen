@@ -1,3 +1,5 @@
+from types import NoneType
+
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -7,8 +9,9 @@ import os
 import requests
 from pymongo import MongoClient
 import sqlite3
-from typing import Dict
-import asyncio
+import queue
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager,asynccontextmanager
 import threading
 
 # Load environment variables
@@ -45,6 +48,11 @@ client = MongoClient(mongo_uri)
 db = client["blacklistDB"]
 blacklist_collection = db["blacklists"]
 kyc_collection = db["kycs"]
+MAX_WORKERS = 10
+eth_address_queue = queue.Queue()
+executor = ThreadPoolExecutor(max_workers=MAX_WORKERS)
+sqlite_lock = threading.Lock()
+thread_already_running = []
 
 # Request model
 class EthereumRequest(BaseModel):
@@ -102,71 +110,128 @@ def KYCverified(eth_address: str) -> int:
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error checking KYC: {str(e)}")
 
-# Function to check if the address exists in the SQLite DB
+@contextmanager
+def get_db_connection():
+    """SQLite connection with thread-safe settings."""
+    conn = sqlite3.connect('addresses.db', check_same_thread=False)
+    try:
+        yield conn
+    finally:
+        conn.close()
+
 def get_address_status(address: str):
-    conn = sqlite3.connect('addresses.db')
-    cursor = conn.cursor()
-    cursor.execute('SELECT score FROM address_scores WHERE address = ?', (address,))
-    row = cursor.fetchone()
-    conn.close()
-    return row  # Return the row (score) if it exists, None otherwise
+    """Fetch score for an address from the SQLite database."""
+    with sqlite_lock, get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute('SELECT score FROM address_scores WHERE address = ?', (address,))
+        return cursor.fetchone()
 
-# Function to store the score in the SQLite DB
 def store_score(address: str, score: float):
-    conn = sqlite3.connect('addresses.db')
-    cursor = conn.cursor()
-    cursor.execute('INSERT OR REPLACE INTO address_scores (address, score) VALUES (?, ?)', (address, score))
-    conn.commit()
-    conn.close()
+    """Update the score for an Ethereum address in the database."""
+    with sqlite_lock, get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute('INSERT INTO address_scores (address, score) VALUES (?, ?)', (address, score))
+        conn.commit()
 
-# Function to simulate asynchronous score calculation
 def calculate_score(eth_address: str):
-    # Simulate score calculation logic
-    score = 0
-    graph_score = 0
-    kyc_score = 0
-    age_txn_score = 0 
-
-    # Call external functions for KYC, TxnGraph, Account Age (for example)
+    """Calculate and store the score for an Ethereum address."""
+    print('Calculating score...')
     if Scammer(eth_address) == 1:
-        score = 1  # Direct return for scammer
-        store_score(eth_address, score)
+        store_score(eth_address, 1)
         return
 
-    kyc_score += KYCverified(eth_address)
-    graph_score += TxnGraphScore.txnGraphScore(eth_address)
-    age_txn_score += accountAge.age_txn_score(eth_address)
+    kyc_score = KYCverified(eth_address)
+    print('KYC score calculated')
+    graph_score = TxnGraphScore.txnGraphScore(eth_address)
+    print('Graph score calculated')
+    age_txn_score = accountAge.age_txn_score(eth_address)
+    print('Age txn score calculated')
 
-    # Normalize scores
+    # Normalize and calculate final score
     graph_score *= 100
-    kyc_score = 1 - kyc_score
-    kyc_score *= 100
-    age_txn_score = 1 - age_txn_score
-    age_txn_score *= 100
-
-    # Calculate final score
+    kyc_score = (1 - kyc_score) * 100
+    age_txn_score = (1 - age_txn_score) * 100
     final_score = (graph_score + kyc_score + age_txn_score) / 3
 
-    # Store the score in the database
     store_score(eth_address, final_score)
+
+worker_count = 0  # Initialize worker count
+worker_count_lock = threading.Lock()  # Lock to ensure thread-safe updates to worker_count
+
+def worker_manager():
+    """
+    Worker Manager to dynamically create threads to process tasks.
+    Spawns new threads when there are tasks in the queue and available worker slots.
+    """
+    global worker_count
+    while True:
+        # Check if there are tasks in the queue and available workers
+        if not eth_address_queue.empty():
+            with worker_count_lock:
+                if worker_count < MAX_WORKERS:
+                    # Fetch the next task from the queue
+                    eth_address = eth_address_queue.get()
+                    # Create a new thread to process the address
+                    thread = threading.Thread(target=process_address, args=(eth_address,), daemon=True)
+                    thread.start()
+
+                    # Increment the worker count
+                    worker_count += 1
+                    print(f"Worker started for address {eth_address}. Total workers: {worker_count}")
+
+        # Small sleep to prevent excessive CPU usage
+        threading.Event().wait(0.1)
+
+def process_address(eth_address: str):
+    """
+    Worker function to process an Ethereum address.
+    Decrements the worker count after task completion.
+    """
+    global worker_count
+
+    print('Processing address...')
+    try:
+        # Calculate the score for the address
+        calculate_score(eth_address)
+        print(f"Address {eth_address} processed.")
+    except Exception as e:
+        print(f"Error processing address {eth_address}: {e}")
+    finally:
+        # Decrement the worker count
+        with worker_count_lock:
+            thread_already_running.remove(eth_address)
+            worker_count -= 1
+            print(f"Worker finished for address {eth_address}. Total workers: {worker_count}")
+
+@app.on_event("startup")
+async def startup_event():
+    """
+    Start the Worker Manager on application startup.
+    """
+    threading.Thread(target=worker_manager, daemon=True).start()
+    print("Worker Manager started.")
 
 @app.post("/process_eth_address")
 async def process_eth_address(data: EthereumRequest):
     try:
+        """Handle incoming requests for Ethereum address processing."""
         eth_address = data.address
 
         # Check if the score is already calculated and stored
         stored_score = get_address_status(eth_address)
-        if stored_score:
-            return {'score': stored_score[0], 'calculated': True}  # Return the stored score and calculated: True
+        if type(stored_score)!=NoneType and len(stored_score)>0:
+            return {'score': stored_score[0], 'calculated': True}
+        # Add the address to the queue if not already being processed
+        elif eth_address not in thread_already_running:
+            thread_already_running.append(eth_address)
+            eth_address_queue.put(eth_address)
 
-        # If the score is not found in the database, return immediately with calculated: false
-        # Start the score calculation in the background (asynchronously or in a separate thread)
-        threading.Thread(target=calculate_score, args=(eth_address,)).start()
-
-        return {'score': None, 'calculated': False}  # Return None as score and calculated: False
-
+        return {'score': None, 'calculated': False}
     except HTTPException as e:
         raise e
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Unexpected error in processing: {str(e)}")
+
+@app.get("/workers_count")
+def workers_count():
+    return {'workers': worker_count}
